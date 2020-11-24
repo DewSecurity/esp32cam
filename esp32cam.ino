@@ -1,24 +1,28 @@
-const char* ssid     = "ahh yes";   //your network SSID
-const char* password = "bigbob123";   //your network password
-
-String myScript = "/macros/s/AKfycbwLDg3yQjpuzHxcaB_10Pv6dxqPkPb2xX22uwWjRkdDi2EUUCM/exec";    //Create your Google Apps Script and replace the "myScript" path.
-//String myLineNotifyToken = "myToken=**********";    //Line Notify Token. You can set the value of xxxxxxxxxx empty if you don't want to send picture to Linenotify.
-String myFoldername = "&myFoldername=ESP32-CAM";
-String myFilename = "&myFilename=ESP32-CAM.jpg";
-String myImage = "&myFile=data:image/jpeg;base64,";
-
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "Base64.h"
 
 #include "esp_camera.h"
 
-// WARNING!!! Make sure that you have either selected ESP32 Wrover Module,
-//            or another board which has PSRAM enabled
+const char* ssid     = "Dew";   //your network SSID
+const char* password = "xyz57495";   //your network password
+const char* myDomain = "script.google.com";
+String myScript = "/macros/s/AKfycbwV62EKmUmckXDFmtGYFqLjlxyOdMAzmt85XpF10prDTkT6TKcq/exec";    //Replace with your own url
+String myFilename = "filename=ESP32-CAM.jpg";
+String mimeType = "&mimetype=image/jpeg";
+String myImage = "&data=";
 
-//CAMERA_MODEL_AI_THINKER
+int waitingTime = 30000; //Wait 30 seconds to google response.
+
+#define MQTT_SERVER   "192.168.43.124"
+#define MQTT_PORT     1883
+#define MQTT_USERNAME ""
+#define MQTT_PASSWORD ""
+#define MQTT_NAME     "ESP32_1"
+
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -37,6 +41,16 @@ String myImage = "&myFile=data:image/jpeg;base64,";
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
+WiFiClient client;
+PubSubClient mqtt(client);
+
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  payload[length] = '\0';
+  String topic_str = topic, payload_str = (char*)payload;
+  Serial.println("[" + topic_str + "]: " + payload_str);
+}
+
 void setup()
 {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
@@ -50,13 +64,11 @@ void setup()
   Serial.print("Connecting to ");
   Serial.println(ssid);
   WiFi.begin(ssid, password);  
-  
-  long int StartTime=millis();
-  while (WiFi.status() != WL_CONNECTED) 
-  {
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
     delay(500);
-    if ((StartTime+10000) < millis()) break;
-  } 
+  }
 
   Serial.println("");
   Serial.println("STAIP address: ");
@@ -64,31 +76,8 @@ void setup()
     
   Serial.println("");
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Reset");
-    
-    ledcAttachPin(4, 3);
-    ledcSetup(3, 5000, 8);
-    ledcWrite(3,10);
-    delay(200);
-    ledcWrite(3,0);
-    delay(200);    
-    ledcDetachPin(3);
-        
-    delay(1000);
-    ESP.restart();
-  }
-  else {
-    ledcAttachPin(4, 3);
-    ledcSetup(3, 5000, 8);
-    for (int i=0;i<5;i++) {
-      ledcWrite(3,10);
-      delay(200);
-      ledcWrite(3,0);
-      delay(200);    
-    }
-    ledcDetachPin(3);      
-  }
+  mqtt.setServer(MQTT_SERVER, MQTT_PORT);
+  mqtt.setCallback(callback);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -111,113 +100,109 @@ void setup()
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  //init with high specs to pre-allocate larger buffers
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = 10;  //0-63 lower number means higher quality
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;  //0-63 lower number means higher quality
-    config.fb_count = 1;
-  }
+  config.frame_size = FRAMESIZE_VGA;  // UXGA|SXGA|XGA|SVGA|VGA|CIF|QVGA|HQVGA|QQVGA
+  config.jpeg_quality = 10;
+  config.fb_count = 1;
   
-  // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
     delay(1000);
     ESP.restart();
   }
-
-  //drop down frame size for higher initial frame rate
-  sensor_t * s = esp_camera_sensor_get();
-  s->set_framesize(s, FRAMESIZE_VGA);  // UXGA|SXGA|XGA|SVGA|VGA|CIF|QVGA|HQVGA|QQVGA
 }
 
-void loop()
-{
-  SendCapturedImage();
-  delay(60000);
+boolean enviar = true;
+
+void loop() {
+  if (mqtt.connected() == false) {
+    Serial.print("MQTT connection... ");
+    if (mqtt.connect(MQTT_NAME, MQTT_USERNAME, MQTT_PASSWORD)) {
+      while(1){
+        Serial.println("connected");
+        mqtt.subscribe("camera/01/imgID");
+        mqtt.publish("camera/01/photo", "photo");
+        delay(5000);
+      }
+    } else {
+      Serial.println("failed");
+      delay(5000);
+    }
+  } else {
+    mqtt.loop();
+  }
+  //if(enviar) {
+    saveCapturedImage();
+    enviar = false;
+    delay(60000);
+  //}
 }
 
-String SendCapturedImage() {
-  const char* myDomain = "script.google.com";
-  String getAll="", getBody = "";
-  
-  camera_fb_t * fb = NULL;
-  fb = esp_camera_fb_get();  
-  if(!fb) {
-    Serial.println("Camera capture failed");
-    delay(1000);
-    ESP.restart();
-    return "Camera capture failed";
-  }  
-  
+void saveCapturedImage() {
   Serial.println("Connect to " + String(myDomain));
-  WiFiClientSecure client_tcp;
+  WiFiClientSecure client;
   
-  if (client_tcp.connect(myDomain, 443)) {
+  if (client.connect(myDomain, 443)) {
     Serial.println("Connection successful");
     
+    camera_fb_t * fb = NULL;
+    fb = esp_camera_fb_get();  
+    if(!fb) {
+      Serial.println("Camera capture failed");
+      delay(1000);
+      ESP.restart();
+      return;
+    }
+  
     char *input = (char *)fb->buf;
     char output[base64_enc_len(3)];
-    String imageFile = "data:image/jpeg;base64,";
+    String imageFile = "";
     for (int i=0;i<fb->len;i++) {
       base64_encode(output, (input++), 3);
       if (i%3==0) imageFile += urlencode(String(output));
     }
-    String Data = myFoldername+myFilename+myImage;
+    String Data = myFilename+mimeType+myImage;
     
-    client_tcp.println("POST " + myScript + " HTTP/1.1");
-    client_tcp.println("Host: " + String(myDomain));
-    client_tcp.println("Content-Length: " + String(Data.length()+imageFile.length()));
-    client_tcp.println("Content-Type: application/x-www-form-urlencoded");
-    client_tcp.println("Connection: keep-alive");
-    client_tcp.println();
-    
-    client_tcp.print(Data);
-    int Index;
-    for (Index = 0; Index < imageFile.length(); Index = Index+1000) {
-      client_tcp.print(imageFile.substring(Index, Index+1000));
-    }
     esp_camera_fb_return(fb);
     
-    int waitTime = 10000;   // timeout 10 seconds
-    long startTime = millis();
-    boolean state = false;
+    Serial.println("Send a captured image to Google Drive.");
     
-    while ((startTime + waitTime) > millis())
-    {
-      Serial.print(".");
-      delay(100);      
-      while (client_tcp.available()) 
-      {
-          char c = client_tcp.read();
-          if (c == '\n') 
-          {
-            if (getAll.length()==0) state=true; 
-            getAll = "";
-          } 
-          else if (c != '\r')
-            getAll += String(c);
-          if (state==true) getBody += String(c);
-          startTime = millis();
-       }
-       if (getBody.length()>0) break;
+    client.println("POST " + myScript + " HTTP/1.1");
+    client.println("Host: " + String(myDomain));
+    client.println("Content-Length: " + String(Data.length()+imageFile.length()));
+    client.println("Content-Type: application/x-www-form-urlencoded");
+    client.println();
+    
+    client.print(Data);
+    int Index;
+    for (Index = 0; Index < imageFile.length(); Index = Index+1000) {
+      client.print(imageFile.substring(Index, Index+1000));
     }
-    client_tcp.stop();
-    Serial.println(getBody);
-  }
-  else {
-    getBody="Connected to " + String(myDomain) + " failed.";
+    
+    Serial.println("Waiting for response.");
+    long int StartTime=millis();
+    while (!client.available()) {
+      Serial.print(".");
+      delay(100);
+      if ((StartTime+waitingTime) < millis()) {
+        Serial.println();
+        Serial.println("No response.");
+        //If you have no response, maybe need a greater value of waitingTime
+        break;
+      }
+    }
+    Serial.println();   
+    while (client.available()) {
+      //String res = client.getResponseBody();
+      //Serial.print(res);
+      Serial.print(char(client.read()));
+    }  
+  } else {         
     Serial.println("Connected to " + String(myDomain) + " failed.");
   }
-  
-  return getBody;
+  client.stop();
 }
 
-//https://github.com/zenmanenergy/ESP8266-Arduino-Examples/
 String urlencode(String str)
 {
     String encodedString="";
