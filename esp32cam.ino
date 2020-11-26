@@ -4,11 +4,18 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "Base64.h"
+#include "HTTPSRedirect.h"
+#include "DebugMacros.h"
 
 #include "esp_camera.h"
 
+//const char* ssid     = "ahh yes";   //your network SSID
+//const char* password = "bigbob123";   //your network password
+
 const char* ssid     = "Dew";   //your network SSID
 const char* password = "xyz57495";   //your network password
+const int httpsPort = 443;
+
 const char* myDomain = "script.google.com";
 String myScript = "/macros/s/AKfycbwV62EKmUmckXDFmtGYFqLjlxyOdMAzmt85XpF10prDTkT6TKcq/exec";    //Replace with your own url
 String myFilename = "filename=ESP32-CAM.jpg";
@@ -22,6 +29,9 @@ int waitingTime = 30000; //Wait 30 seconds to google response.
 #define MQTT_USERNAME ""
 #define MQTT_PASSWORD ""
 #define MQTT_NAME     "ESP32_1"
+
+WiFiClient client;
+PubSubClient mqtt(client);
 
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -41,14 +51,24 @@ int waitingTime = 30000; //Wait 30 seconds to google response.
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-WiFiClient client;
-PubSubClient mqtt(client);
-
+boolean enviar = true;
 
 void callback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0';
   String topic_str = topic, payload_str = (char*)payload;
   Serial.println("[" + topic_str + "]: " + payload_str);
+
+  
+  if(payload_str == "take-a-photo"){
+    Serial.println("Uploading");
+    saveCapturedImage();
+    enviar = false;
+    mqtt.publish("camera/01/imgID", "1kM5AK1vzJOevgX0d4GnETMqhejIh_y2y");  loop();
+    mqtt.loop();
+  }
+  else{
+    Serial.println("");
+  }
 }
 
 void setup()
@@ -112,18 +132,19 @@ void setup()
   }
 }
 
-boolean enviar = true;
 
 void loop() {
   if (mqtt.connected() == false) {
     Serial.print("MQTT connection... ");
     if (mqtt.connect(MQTT_NAME, MQTT_USERNAME, MQTT_PASSWORD)) {
-      while(1){
-        Serial.println("connected");
-        mqtt.subscribe("camera/01/imgID");
-        mqtt.publish("camera/01/photo", "photo");
-        delay(5000);
-      }
+      Serial.println("connected");
+      mqtt.subscribe("camera/01/photo");
+      /*
+      saveCapturedImage();
+      enviar = false;
+      mqtt.publish("camera/01/imgID", "1e1fx_DZ9nqOZ6wzJpKPRhxjNr50CRVxa");
+      delay(10000);*/
+      mqtt.loop();
     } else {
       Serial.println("failed");
       delay(5000);
@@ -132,15 +153,22 @@ void loop() {
     mqtt.loop();
   }
   //if(enviar) {
+  /*
     saveCapturedImage();
     enviar = false;
+    mqtt.publish("camera/01/photo", "photo");
     delay(60000);
   //}
+  */
 }
 
 void saveCapturedImage() {
   Serial.println("Connect to " + String(myDomain));
-  WiFiClientSecure client;
+  HTTPSRedirect client;
+  //client->setInsecure();
+  client.setPrintResponseBody(true);
+  //client.setContentTypeHeader("text/html");
+  //client.setPrintResponseBody(true);
   
   if (client.connect(myDomain, 443)) {
     Serial.println("Connection successful");
@@ -174,6 +202,9 @@ void saveCapturedImage() {
     client.println();
     
     client.print(Data);
+    Serial.println("Response test:");
+    Serial.println(String(client.getResponseBody()));
+    
     int Index;
     for (Index = 0; Index < imageFile.length(); Index = Index+1000) {
       client.print(imageFile.substring(Index, Index+1000));
@@ -195,8 +226,26 @@ void saveCapturedImage() {
     while (client.available()) {
       //String res = client.getResponseBody();
       //Serial.print(res);
+      //String url = myDomain+myScript;
+      //client.GET(myScript, myDomain);
+      //Serial.print(String(client.getResponseBody()));
+      //Serial.println("Read:");
       Serial.print(char(client.read()));
-    }  
+      //Serial.println("Status code");
+      //Serial.println(int(client.getStatusCode()));
+      //Serial.println("Reason phrase");
+      //Serial.println(String(client.getReasonPhrase()));
+
+      //Serial.println("Response body:");
+      //client.setPrintResponseBody(true);
+      //Serial.println(String(client.getResponseBody()));
+      //Serial.println("Read:");
+      //Serial.println(String(client.read()));
+
+    }
+    //Serial.println("Response body:");
+    //client.setPrintResponseBody(true);
+    //Serial.println(String(client.getResponseBody()));  
   } else {         
     Serial.println("Connected to " + String(myDomain) + " failed.");
   }
